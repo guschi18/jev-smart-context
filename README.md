@@ -1,48 +1,65 @@
-# Jev Explained
+# Jev Smart Context
 
-**Learn how TypeSafe's Jev makes typed, probabilistic decisions — by running it.**
+**A local Smart Context compiler for coding agents — Jev decides what is relevant, deterministic code decides what is safe.**
 
-Live demo: **https://jev-explained-repo.vercel.app/** (bring your own TypeSafe or Vercel AI Gateway key).
+Every model call sends the agent's full conversation and tool history again. This project rebuilds that history before every call so the model only sees what it needs for the current task — cutting input tokens and context-window pressure without losing requirements, security rules, decisions, or open work.
 
-<p align="center">
-  <img src="docs/jev-primitives.png" alt="Jev primitives: Noul (yes/no), Choice (which one), Score (how much)" width="640">
-</p>
+Built on the [Jev Explained](https://github.com/davila7/jev-explained) playground and [TypeSafe's Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev) (`typesafe/jev-1.13` via the [OpenRouter Decisions API](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-questions-and-answers-request)).
 
-An interactive playground that shows, step by step, how [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev) — TypeSafe's System One model — works.
+## The idea: Meta-Attention
 
-## What is Jev?
+Context is not static. For every new user turn, the previous history is re-evaluated:
 
-Jev is not a chat LLM. It does not generate text. You send it a **state** (any text or JSON: an email, a market snapshot, a tool call an agent wants to run, a whole inbox) plus one or more typed **questions**, and it returns calibrated probabilities for every question in a single ~100 ms round trip. Your code, not the model, makes the final decision by thresholding on those numbers.
+```text
+new user turn
+      ↓
+normalize transcript
+      ↓
+semantic chunks
+      ↓
+deterministic prefilter     ← pins, duplicates, secrets, recency — no model cost
+      ↓
+Jev relevance questions     ← one noul question per candidate, in parallel
+      ↓
+dependency closure          ← transitively keep referenced chunks
+      ↓
+compiled context            ← chronologically ordered
+      ↓
+Claude Code / Codex / OpenCode
+```
 
-### The three primitives
+The division of labor is strict:
 
-Choose the primitive by the type of question you are asking:
+- **Jev** evaluates semantic relevance and uncertainty for closed questions (noul / choice / score primitives, calibrated probabilities, ~100 ms round trips).
+- **Code** owns everything determinism can solve: token counting, budgets, dependencies, cache economics, and security rules. Jev is never a security boundary.
 
-| Primitive | Ask it when | Example | Returns |
-| --- | --- | --- | --- |
-| **Noul** — yes / no? | the question is binary | *Is this email spam?* | one probability, 0 → no, 1 → yes |
-| **Choice** — which one? | you pick from known options | *Which team should handle this?* | the chosen option, a probability for every option, and a `confidence` |
-| **Score** — how much / what level? | you grade on an ordered rubric | *How risky is this?* | a weighted score, a probability for every level, and a `confidence` |
+### What is always kept
 
-Two things make this different from asking an LLM:
+Pinned chunks never leave, regardless of what Jev says:
 
-- **Questions run in parallel.** Jev reads the state once and answers every question at the same time, so ten questions cost about the same as one. You can fan out speculatively and let your code decide what matters.
-- **Confidence is a second axis.** Choice and Score answers tell you *what* (the answer) and *how sure* (the shape of the distribution). High confidence → act automatically; low confidence → ask a human.
+- System, developer and repository instructions
+- The current user turn (and user turns generally)
+- The last relevant error state and failed tool calls
+- Unfinished tool transactions, active unverified changes
+- Secrets and sensitive content — detected locally, never sent externally
+- Anything under 100 estimated tokens (cheaper to keep than to classify)
 
-### What this repo shows
+Jev only judges the remaining candidates: older, larger, non-sensitive tool and assistant chunks.
 
-The playground walks through four patterns, each with real requests you can run with your own key:
+### Fail-safe by default
 
-| Example | Pattern | State | Questions |
-| --- | --- | --- | --- |
-| **Email Spam Classifier** | Text classification | an email | `is_spam` (noul), `folder` (choice), `suspicion` (score) |
-| **NVIDIA: Buy or Sell?** | Decision on structured data | a JSON market snapshot | `action` (choice), `sentiment` (score), `material_risk` (noul) |
-| **Agent Tool-Call Guardrail** | Jev inside an agent harness | a tool call the agent wants to run | `verdict` (choice), `is_destructive` (noul), `blast_radius` (score), `in_scope` (noul) |
-| **Inbox Triage** | Speculative fan-out | 8 support tickets | 8 × `priority` (score), `most_urgent` (choice), `needs_incident` (noul) — one request |
+Any missing API key, network error, timeout (5 s), oversized payload, or malformed selector response keeps the **complete original context**. The selector may fail; the agent task must not.
 
-For every run the right-hand panel shows the exact request, latency and token usage, the typed answers with probability bars, and the decision your code makes from them.
+## What is in this repo
 
-Endpoint: `POST https://api.typesafe.ai/v1/systemone` · Model: `jev-latest`. See the [API reference](https://docs.typesafe.ai/api).
+| Piece | Path | What it is |
+| --- | --- | --- |
+| **Compiler core** | `src/lib/context.ts` | Chunk model, pins, deterministic prefilter, selector request builders, dependency closure, fail-safe compilation |
+| **Compiler endpoint** | `src/app/api/context/route.ts` | Validated `/api/context` route: pins secrets locally, calls Jev, falls back safely |
+| **Context Lab UI** | `src/app/context/`, `src/components/ContextLab.tsx` | Replay a realistic coding session against a new request; every keep/drop score, token estimate and fallback is visible |
+| **OpenCode plugin** | `.opencode/plugins/jev-context.ts` | OpenCode V2 `context` hook: compiles outgoing messages before every model call, replaces only the model-bound message array |
+| **Evaluation harness** | `src/lib/context-evaluation.ts`, `src/lib/context-fixture.ts`, `scripts/` | 10 labeled scenarios (6 calibration / 4 holdout), threshold fitting, cost & latency report, Go/No-Go |
+| **Jev playground** | `src/app/page.tsx`, `src/lib/examples.ts` | The original Jev Explained learning app: four runnable examples showing noul / choice / score |
 
 ## Run it
 
@@ -51,48 +68,74 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000, pick a provider, paste its key, choose an example and press **Run** (or ⌘↵). Edit the state or switch between the sample states to see how the answers move. Use the `≡ / </>` toggle to see the raw request JSON.
+Open http://localhost:3000 for the playground and http://localhost:3000/context for the Context Lab. An OpenRouter key (create one at [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys)) is stored in your browser's `localStorage` only and forwarded per request; the server never persists it.
 
-## Providers
+Tests and evaluation:
 
-Both providers speak TypeSafe's native request/response shape; only the URL, key and model id change.
+```bash
+npm run test:context        # offline unit tests: grouping, pins, dependency closure
+npm run evaluate:context    # 50 real Jev replay runs (costs OpenRouter credits)
+npm run evaluate:summaries  # 45 real Jev summary-level replays (costs credits)
+```
 
-| Provider | Endpoint | Model | Key |
-| --- | --- | --- | --- |
-| TypeSafe | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | [console.typesafe.ai/keys](https://console.typesafe.ai/keys) |
-| Vercel AI Gateway | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `typesafe-ai/jev` | AI Gateway API key from your Vercel team ([docs](https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe)) |
+## Use it inside OpenCode V2
 
-## How the key is handled
+The plugin at `.opencode/plugins/jev-context.ts` is loaded automatically when you start OpenCode V2 in this repository:
 
-Neither API accepts cross-origin browser calls, so the app ships a tiny proxy at `src/app/api/jev/route.ts`. Keys are stored per provider in your browser's `localStorage` only and forwarded on each request in the `x-jev-api-key` header (with `x-jev-provider` selecting the upstream); the server never persists them.
+```powershell
+$env:OPENROUTER_API_KEY = "your-key"
+npm run dev
+# In another terminal, start OpenCode V2 in this repository.
+```
+
+The plugin converts the outgoing message history into compiler chunks, calls the local `/api/context` endpoint, and replaces only the model-bound messages. Tool calls and their results stay inseparable; provider-visible history is never broken. Content-free run metrics and deterministic summary variants are stored in OpenCode's plugin storage. Set `JEV_CONTEXT_ENDPOINT` if the local app runs on another URL.
+
+Binary keep/drop is the live policy. Summary levels (`drop / short / long / full`) are calibrated in replay (extractive head/tail variants, confidence rule: raw `short` below 0.50 is raised to `long`) but are not sent yet — they become active only after controlled real-session validation.
+
+## Results so far
+
+- **Replay evaluation** (100 runs, calibration + holdout): 83.6 % median token reduction, 100 % must-keep recall, 95.2 % precision, p95 latency 374–479 ms, positive net savings.
+- **OpenCode field test** (three independent long sessions, 99 model messages): all 48 canary and repository-rule checks passed, 42.7 % dispatch input reduction, p95 625 ms, zero context losses across network, timeout and parser fallbacks.
+- **Summary-level replay** (45 runs after calibration): 100 % minimum-detail recall, 93.7 % median reduction, p95 417 ms.
+
+Full numbers, thresholds, phase decisions and acceptance criteria: [Plan.md](Plan.md).
+
+## Safety model
+
+- Known secret patterns are redacted locally before any external call; sensitive chunks are pinned and never sent to Jev.
+- `.env` contents, credentials, tokens, cookies and private keys are blocked by default.
+- The plugin only accepts a loopback compiler endpoint and enforces payload and chunk limits.
+- No server-side persistence of keys; logs stay secret-free.
+- Adversarial or injected text can influence Jev's judgment — safety rules are therefore decided by code, never by the model.
 
 ## Project layout
 
 ```
 src/
-  app/
-    page.tsx            three-panel layout + run loop
-    api/jev/route.ts    server-side proxy to api.typesafe.ai
-  components/
-    Sidebar.tsx         API key + example list
-    Workbench.tsx       state editor, questions, formatted/JSON toggle
-    TracePanel.tsx      session timeline (request → response → answers → decision)
-    AnswerCard.tsx      noul / choice / score renderers
   lib/
-    examples.ts         runnable examples
-    providers.ts        TypeSafe / Vercel AI Gateway endpoints and model ids
-    types.ts            TypeSafe API types
-    trace.ts            timeline event types
-    useApiKey.ts        localStorage-backed provider + key hook
+    context.ts             compiler core (chunks, pins, selectors, fallback)
+    context-fixture.ts     10 replay scenarios with must-keep / safe-to-drop labels
+    context-evaluation.ts  replay metrics, threshold calibration, Go/No-Go report
+    examples.ts            playground examples
+  app/
+    page.tsx               Jev playground
+    context/page.tsx       Context Lab
+    api/jev/route.ts       playground proxy to OpenRouter Decisions
+    api/context/route.ts   compiler endpoint
+.opencode/plugins/
+  jev-context.ts           OpenCode V2 adapter
+scripts/
+  evaluate-context.ts      replay evaluation runner
+  evaluate-summaries.ts    summary-level evaluation runner
 ```
 
-## Adding an example
+## Origin & credits
 
-Add an object to `EXAMPLES` in `src/lib/examples.ts`. Each one declares a `state`, a `questions` map (the same shape the API takes), a few quick-swap `samples`, and a `decide()` function that turns the answers into the decision your code would make.
+The playground foundation, Jev examples and visual design come from [Jev Explained](https://github.com/davila7/jev-explained) by Daniel Avila. The Smart Context compiler, Context Lab, evaluation harness and OpenCode integration build on that base.
 
 ## Contributing
 
-New examples and fixes are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Please follow the [Code of Conduct](CODE_OF_CONDUCT.md) and report security issues as described in [SECURITY.md](SECURITY.md).
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CONDUCT.md) and [SECURITY.md](SECURITY.md).
 
 ## License
 
