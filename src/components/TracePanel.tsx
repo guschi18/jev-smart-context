@@ -170,7 +170,7 @@ function EventRow({
           <Head
             title={`Response · ${ev.latencyMs} ms`}
             tone="ok"
-            meta={`${ev.usage.input_tokens} tokens in · 0 out`}
+            meta={`${ev.usage.input_tokens} tokens in · ${ev.usage.output_tokens} out`}
           />
           {n > 5 && (
             <div className="mt-1.5 text-[13px] text-fg-dim">

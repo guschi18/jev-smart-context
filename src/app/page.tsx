@@ -5,7 +5,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { Workbench } from "@/components/Workbench";
 import { TracePanel } from "@/components/TracePanel";
 import { EXAMPLES } from "@/lib/examples";
-import { PROVIDERS } from "@/lib/providers";
+import { PROVIDER } from "@/lib/providers";
 import type { Run, TraceEvent } from "@/lib/trace";
 import { useApiKey } from "@/lib/useApiKey";
 import {
@@ -18,7 +18,7 @@ import {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default function Home() {
-  const { provider, apiKey, setProvider, setApiKey } = useApiKey();
+  const { apiKey, setApiKey } = useApiKey();
   const [selectedId, setSelectedId] = useState(EXAMPLES[0].id);
   const example = useMemo(
     () => EXAMPLES.find((e) => e.id === selectedId) ?? EXAMPLES[0],
@@ -46,7 +46,7 @@ export default function Home() {
       );
 
     const request: JevRequest = {
-      model: PROVIDERS[provider].model,
+      model: PROVIDER.model,
       state: parseState(state),
       questions: example.questions,
     };
@@ -54,7 +54,7 @@ export default function Home() {
       ...rs,
       {
         id,
-        exampleTitle: `${example.title} · ${PROVIDERS[provider].label}`,
+        exampleTitle: `${example.title} · ${PROVIDER.label}`,
         startedAt: Date.now(),
         status: "running",
         events: [{ kind: "request", at: Date.now(), request }],
@@ -67,8 +67,7 @@ export default function Home() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-jev-api-key": apiKey.trim(),
-          "x-jev-provider": provider,
+          "x-openrouter-api-key": apiKey.trim(),
         },
         body: JSON.stringify(request),
       });
@@ -131,13 +130,11 @@ export default function Home() {
       { kind: "decision", at: Date.now(), ...example.decide(data.answers) },
       "done",
     );
-  }, [apiKey, provider, example, runs.length, state]);
+  }, [apiKey, example, runs.length, state]);
 
   return (
     <main className="flex h-screen w-screen overflow-hidden">
       <Sidebar
-        provider={provider}
-        onProviderChange={setProvider}
         apiKey={apiKey}
         onApiKeyChange={setApiKey}
         examples={EXAMPLES}
@@ -145,7 +142,6 @@ export default function Home() {
         onSelect={onSelect}
       />
       <Workbench
-        provider={provider}
         example={example}
         state={state}
         onStateChange={setState}

@@ -2,7 +2,7 @@
 
 ## API keys
 
-This app never stores API keys on the server. Keys are kept in the browser's `localStorage` and forwarded per request through `src/app/api/jev/route.ts`, which only proxies to the two whitelisted upstreams (TypeSafe and Vercel AI Gateway). If you self-host, put the app behind HTTPS so keys are not sent in the clear.
+This app never stores API keys on the server. The OpenRouter key is kept in the browser's `localStorage` and forwarded per request through `src/app/api/jev/route.ts`, which only proxies to OpenRouter's fixed Decisions endpoint. If you self-host, put the app behind HTTPS so keys are not sent in the clear.
 
 Do not paste production keys into a deployment you do not control.
 

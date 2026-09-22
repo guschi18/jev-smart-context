@@ -2,10 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { parseState, type Example, type Question } from "@/lib/types";
-import { PROVIDERS, type ProviderId } from "@/lib/providers";
+import { PROVIDER } from "@/lib/providers";
 
 type Props = {
-  provider: ProviderId;
   example: Example;
   state: string;
   onStateChange: (s: string) => void;
@@ -21,7 +20,6 @@ const TYPE_STYLES: Record<Question["type"], string> = {
 };
 
 export function Workbench({
-  provider,
   example,
   state,
   onStateChange,
@@ -30,7 +28,7 @@ export function Workbench({
   canRun,
 }: Props) {
   const [view, setView] = useState<"cards" | "json">("cards");
-  const { url, model } = PROVIDERS[provider];
+  const { url, model } = PROVIDER;
   const compact = Object.keys(example.questions).length > 5;
   const requestJson = JSON.stringify(
     { model, state: parseState(state), questions: example.questions },

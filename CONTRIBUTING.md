@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-You need a [TypeSafe API key](https://console.typesafe.ai/keys) or a Vercel AI Gateway key to run examples. Keys stay in your browser's `localStorage`; nothing is committed.
+You need an [OpenRouter API key](https://openrouter.ai/settings/keys) with credits to run examples. The key stays in your browser's `localStorage`; nothing is committed.
 
 Before opening a PR, make sure these pass:
 

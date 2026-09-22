@@ -1,38 +1,39 @@
 "use client";
 
 import { useCallback, useSyncExternalStore } from "react";
-import { isProviderId, type ProviderId } from "./providers";
 
-const KEY = "jev-explained:settings";
+const KEY = "jev-explained:openrouter-api-key";
+const SETTINGS_KEY = "jev-explained:settings";
 const LEGACY_KEY = "jev-explained:api-key";
 const listeners = new Set<() => void>();
 
-type Settings = { provider: ProviderId; keys: Partial<Record<ProviderId, string>> };
-const EMPTY: Settings = { provider: "typesafe", keys: {} };
+let cache: string | null = null;
 
-let cache: Settings | null = null;
-
-function read(): Settings {
-  if (cache) return cache;
+function read() {
+  if (cache !== null) return cache;
   try {
-    const raw = localStorage.getItem(KEY);
-    const parsed = raw ? (JSON.parse(raw) as Partial<Settings>) : {};
-    // Migrate the single-key format used before provider selection existed.
-    const legacy = localStorage.getItem(LEGACY_KEY);
-    cache = {
-      provider: isProviderId(parsed.provider) ? parsed.provider : "typesafe",
-      keys: { ...(legacy ? { typesafe: legacy } : {}), ...parsed.keys },
+    const existing = localStorage.getItem(KEY);
+    if (existing !== null) return (cache = existing);
+    const settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as {
+      provider?: string;
+      keys?: Record<string, string>;
     };
+    cache =
+      settings.keys?.openrouter ??
+      (settings.provider ? settings.keys?.[settings.provider] : undefined) ??
+      localStorage.getItem(LEGACY_KEY) ??
+      "";
+    if (cache) localStorage.setItem(KEY, cache);
   } catch {
-    cache = EMPTY;
+    cache = "";
   }
   return cache;
 }
 
-function write(next: Settings) {
+function write(next: string) {
   cache = next;
   try {
-    localStorage.setItem(KEY, JSON.stringify(next));
+    localStorage.setItem(KEY, next);
   } catch {}
   listeners.forEach((cb) => cb());
 }
@@ -50,17 +51,9 @@ function subscribe(cb: () => void) {
   };
 }
 
-/** Selected provider and its API key, persisted in localStorage. Server snapshot is empty so hydration matches. */
+/** OpenRouter key persisted in localStorage. Server snapshot is empty so hydration matches. */
 export function useApiKey() {
-  const settings = useSyncExternalStore(subscribe, read, () => EMPTY);
-  const provider = settings.provider;
-  const apiKey = settings.keys[provider] ?? "";
-
-  const setProvider = useCallback((p: ProviderId) => write({ ...read(), provider: p }), []);
-  const setApiKey = useCallback((k: string) => {
-    const cur = read();
-    write({ ...cur, keys: { ...cur.keys, [cur.provider]: k } });
-  }, []);
-
-  return { provider, apiKey, setProvider, setApiKey };
+  const apiKey = useSyncExternalStore(subscribe, read, () => "");
+  const setApiKey = useCallback((key: string) => write(key), []);
+  return { apiKey, setApiKey };
 }

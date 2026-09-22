@@ -1,4 +1,4 @@
-// Types mirror the TypeSafe HTTP API: https://docs.typesafe.ai/api
+// Types mirror OpenRouter's Decisions API for Jev.
 
 export type JsonValue =
   | string
@@ -51,9 +51,11 @@ export type ScoreAnswer = {
 export type Answer = NoulAnswer | ChoiceAnswer | ScoreAnswer;
 
 export type JevResponse = {
+  id?: string;
   model: string;
+  provider?: string;
   answers: Record<string, Answer>;
-  usage: { input_tokens: number; output_tokens: number };
+  usage: { input_tokens: number; output_tokens: number; cost?: number };
 };
 
 /** What the /api/jev proxy returns to the browser. */

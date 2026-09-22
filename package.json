@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:context": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test src/lib/context.test.ts",
+    "evaluate:context": "node --env-file=.env --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/evaluate-context.ts",
+    "evaluate:summaries": "node --env-file=.env --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/evaluate-summaries.ts"
   },
   "dependencies": {
     "next": "16.3.5",
