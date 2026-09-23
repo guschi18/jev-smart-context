@@ -90,6 +90,7 @@ export type CompilationResult = {
   selectorLatencyMs: number;
   selectorUsage?: { inputTokens: number; outputTokens: number; costUsd?: number };
   summaryDecisions?: SummaryDecision[];
+  selectorCachedQuestions?: number;
   fallbackReason?: string;
 };
 
@@ -178,6 +179,8 @@ export function normalizeTranscript(
 ): ContextChunk[] {
   const consumed = new Set<string>();
   const maxTurn = Math.max(0, ...entries.map((entry) => entry.turn));
+  // Everything since the current user turn is active, possibly unverified work.
+  const currentTurn = entries.find((entry) => entry.id === currentEntryId)?.turn ?? maxTurn;
   const chunks: ContextChunk[] = [];
 
   for (const entry of entries) {
@@ -194,23 +197,26 @@ export function normalizeTranscript(
         ? `Tool call:\n${entry.content}\n\nTool result:\n${result.content}`
         : `Unfinished tool call:\n${entry.content}`;
       const sensitive = containsSecret(content);
+      const turn = Math.max(entry.turn, result?.turn ?? entry.turn);
       chunks.push({
         id: `tool:${entry.toolCallId}`,
         kind: result?.error ? "error" : "tool_transaction",
         content,
-        turn: entry.turn,
+        turn,
         tokenEstimate: estimateTokens(content),
         dependencies: [...new Set([...(entry.dependencies ?? []), ...(result?.dependencies ?? [])])],
-        pinned: !result || Boolean(result.error) || sensitive || entry.turn >= maxTurn - 1,
+        pinned: !result || Boolean(result.error) || sensitive || turn >= maxTurn - 1 || turn >= currentTurn,
         pinReason: !result
           ? "unfinished tool transaction"
           : result.error
             ? "last error state"
             : sensitive
             ? "sensitive content stays local"
-            : entry.turn >= maxTurn - 1
+            : turn >= maxTurn - 1
               ? "recent context"
-              : undefined,
+              : turn >= currentTurn
+                ? "current task work"
+                : undefined,
         source: {
           agent: "opencode",
           messageIds: [entry.id, ...(result ? [result.id] : [])],
@@ -250,7 +256,8 @@ export function normalizeTranscript(
     const instruction = kind === "instruction";
     const current = entry.id === currentEntryId;
     const recent = entry.turn >= maxTurn - 1;
-    const pinned = Boolean(entry.pinned || instruction || current || sensitive || recent);
+    const active = entry.turn >= currentTurn;
+    const pinned = Boolean(entry.pinned || instruction || current || sensitive || recent || active);
     chunks.push({
       id: entry.id,
       kind,
@@ -269,7 +276,9 @@ export function normalizeTranscript(
               ? "sensitive content stays local"
               : recent
                 ? "recent context"
-                : undefined,
+                : active
+                  ? "current task work"
+                  : undefined,
       source: { agent: "opencode", messageIds: [entry.id] },
     });
   }

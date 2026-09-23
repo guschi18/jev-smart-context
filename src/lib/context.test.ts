@@ -17,6 +17,7 @@ import {
   type TranscriptEntry,
 } from "./context.ts";
 import { evaluateReplay } from "./context-evaluation.ts";
+import { SelectorAnswerCache } from "./selector-cache.ts";
 import { REPLAY_FIXTURES, type ReplayFixture } from "./context-fixture.ts";
 import jevContextPlugin, {
   applySummaryLevels,
@@ -48,6 +49,71 @@ test("normalization groups tools and pins protected context", () => {
   assert.equal(chunks.find((chunk) => chunk.id === "rules")?.pinned, true);
   assert.equal(chunks.find((chunk) => chunk.id === "secret")?.pinned, true);
   assert.equal(chunks.find((chunk) => chunk.id === "current")?.pinned, true);
+});
+
+test("recent tool results stay full even when their calls preceded multiple results", () => {
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "Read the guide, then edit." }] },
+    { role: "assistant", content: [
+      { type: "tool-call", id: "rules", name: "read", input: { path: "AGENTS.md" } },
+      { type: "tool-call", id: "guide", name: "read", input: { path: "route.md" } },
+    ] },
+    { role: "tool", content: [{ type: "tool-result", id: "rules", result: "Repository rules ".repeat(100) }] },
+    { role: "tool", content: [{ type: "tool-result", id: "guide", result: "Route guide ".repeat(100) }] },
+  ];
+  const prepared = prepareContext(messages, "repo");
+  const tools = prepared.input.chunks.filter((chunk) => chunk.kind === "tool_transaction");
+  assert.equal(tools.length, 2);
+  assert.ok(tools.every((chunk) => chunk.pinned && chunk.pinReason === "recent context"));
+  assert.equal(buildSummarySelectorRequest(prepared.input, "model").candidates.length, 0);
+  const result = compileSummarySelection(prepared.input, {}, 0);
+  assert.deepEqual(applySummaryLevels(messages, prepared, result).messages, messages);
+});
+
+test("OpenCode V2 tool parts keep failed test output as a pinned transaction", () => {
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "Run the context tests." }] },
+    { role: "assistant", content: [{
+      type: "tool", id: "test-run", name: "shell",
+      state: {
+        status: "completed", input: { command: "run-flagged-test.cmd" },
+        content: [{ type: "text", text: "1\n14 pass, 1 fail; actual 3, expected 2" }],
+        metadata: { exit: 1 },
+      },
+    }] },
+    { role: "assistant", content: [{ type: "text", text: "Investigating." }] },
+    { role: "user", content: [{ type: "text", text: "What failed?" }] },
+  ];
+  const prepared = prepareContext(messages, "repo");
+  const result = prepared.input.chunks.find((chunk) => chunk.id === "tool:test-run");
+  assert.equal(result?.kind, "error");
+  assert.equal(result?.pinned, true);
+  assert.match(result?.content ?? "", /run-flagged-test\.cmd[\s\S]*14 pass, 1 fail/);
+  assert.equal(buildSummarySelectorRequest(prepared.input, "model").candidates.some(
+    ({ chunk }) => chunk.id === "tool:test-run",
+  ), false);
+});
+
+test("earlier tool steps of the current user turn stay pinned as active work", () => {
+  const step = (id: string, name: string, output: string) => ({
+    role: "assistant",
+    content: [{ type: "tool", id, name, state: { status: "completed", input: { path: "route.ts" }, content: [{ type: "text", text: output }] } }],
+  });
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "Read route.ts." }] },
+    step("old-read", "read", "old parseInput code ".repeat(60)),
+    { role: "user", content: [{ type: "text", text: "Refactor parseInput, then run the tests." }] },
+    step("edit", "edit", "Edited route.ts (1 replacement) ".repeat(20)),
+    step("check-1", "read", "run-clear-test.cmd contents ".repeat(20)),
+    step("check-2", "read", "package.json contents ".repeat(20)),
+    step("check-3", "read", "new parseInput code ".repeat(20)),
+  ];
+  const prepared = prepareContext(messages, "repo");
+  const edit = prepared.input.chunks.find((chunk) => chunk.id === "tool:edit");
+  assert.equal(edit?.pinned, true);
+  assert.equal(edit?.pinReason, "current task work");
+  const candidates = buildSummarySelectorRequest(prepared.input, "model").candidates.map(({ chunk }) => chunk.id);
+  assert.deepEqual(candidates, ["tool:old-read"]);
 });
 
 test("dependency closure is transitive", () => {
@@ -343,17 +409,18 @@ test("summary dispatch replaces whole tool transactions, keeps pins, and applies
   assert.equal(result.summaryDecisions?.find(({ id }) => id === "message:3")?.level, "long");
 });
 
-test("OpenCode context hook replaces messages and fails safe without a key", async () => {
+const HOOK_MESSAGES = [
+  { role: "user", content: [{ type: "text", text: "Old task" }] },
+  { role: "assistant", content: [{ type: "text", text: "Old answer" }] },
+  { role: "user", content: [{ type: "text", text: "Current task" }] },
+];
+
+async function runContextHook(env: { apiKey?: string; summaryLevels?: string }) {
   const originalKey = process.env.OPENROUTER_API_KEY;
   const originalSummaryFlag = process.env.JEV_SUMMARY_LEVELS;
   const originalFetch = globalThis.fetch;
-  let hook: ((event: { readonly sessionID: string; messages: typeof messages }) => Promise<void>) | undefined;
+  let hook: ((event: { readonly sessionID: string; messages: typeof HOOK_MESSAGES }) => Promise<void>) | undefined;
   const metrics: Record<string, unknown>[] = [];
-  const messages = [
-    { role: "user", content: [{ type: "text", text: "Old task" }] },
-    { role: "assistant", content: [{ type: "text", text: "Old answer" }] },
-    { role: "user", content: [{ type: "text", text: "Current task" }] },
-  ];
   const ctx = {
     location: { directory: "repo", project: { canonical: "repo" } },
     session: {
@@ -369,10 +436,14 @@ test("OpenCode context hook replaces messages and fails safe without a key", asy
   };
 
   try {
-    process.env.OPENROUTER_API_KEY = "test-key";
+    if (env.apiKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = env.apiKey;
+    if (env.summaryLevels === undefined) delete process.env.JEV_SUMMARY_LEVELS;
+    else process.env.JEV_SUMMARY_LEVELS = env.summaryLevels;
+    // The mock compiler answers with binary decisions only, never summaryDecisions.
     globalThis.fetch = async (_input, init) => {
       const input = JSON.parse(String(init?.body)) as CompileInput;
-      assert.equal(input.summaryLevels, process.env.JEV_SUMMARY_LEVELS === "1" ? true : undefined);
+      assert.equal(input.summaryLevels, env.summaryLevels === "1" ? true : undefined);
       return Response.json({
         mode: "rebuild",
         chunks: input.chunks,
@@ -391,31 +462,9 @@ test("OpenCode context hook replaces messages and fails safe without a key", asy
     };
     await jevContextPlugin.setup(ctx);
     assert.ok(hook);
-
-    const event = { sessionID: "session", messages: [...messages] };
+    const event = { sessionID: "session", messages: [...HOOK_MESSAGES] };
     await hook(event);
-    assert.deepEqual(event.messages, messages.slice(1));
-    assert.equal(metrics.at(-1)?.status, "compiled");
-    assert.deepEqual(metrics.at(-1)?.selection, [
-      { kind: "user_turn", tokens: 2, kept: false, relevance: 0.1 },
-    ]);
-    assert.equal(metrics.at(-1)?.inputTokensAfter, 6);
-
-    process.env.JEV_SUMMARY_LEVELS = "1";
-    const invalidSummary = { sessionID: "session", messages: [...messages] };
-    await hook(invalidSummary);
-    assert.deepEqual(invalidSummary.messages, messages);
-    assert.equal(metrics.at(-1)?.status, "fallback");
-    assert.equal(metrics.at(-1)?.fallbackReason, "Compiler returned no summary decisions");
-    delete process.env.JEV_SUMMARY_LEVELS;
-
-    delete process.env.OPENROUTER_API_KEY;
-    const fallback = { sessionID: "session", messages: [...messages] };
-    await hook(fallback);
-    assert.deepEqual(fallback.messages, messages);
-    assert.equal(metrics.at(-1)?.status, "fallback");
-    assert.equal(metrics.at(-1)?.inputTokensBefore, metrics.at(-1)?.inputTokensAfter);
-    assert.ok(Number(metrics.at(-1)?.inputTokensBefore) > 0);
+    return { messages: event.messages, metric: metrics.at(-1) };
   } finally {
     globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
@@ -423,6 +472,40 @@ test("OpenCode context hook replaces messages and fails safe without a key", asy
     if (originalSummaryFlag === undefined) delete process.env.JEV_SUMMARY_LEVELS;
     else process.env.JEV_SUMMARY_LEVELS = originalSummaryFlag;
   }
+}
+
+test("OpenCode context hook filters messages in binary mode", async () => {
+  const { messages, metric } = await runContextHook({ apiKey: "test-key" });
+  // Status and fallback reason first, so a failure names the fallback cause.
+  assert.deepEqual(
+    { status: metric?.status, fallbackReason: metric?.fallbackReason },
+    { status: "compiled", fallbackReason: undefined },
+  );
+  assert.deepEqual(messages, HOOK_MESSAGES.slice(1));
+  assert.deepEqual(metric?.selection, [
+    { kind: "user_turn", tokens: 2, kept: false, relevance: 0.1 },
+  ]);
+  assert.equal(metric?.inputTokensAfter, 6);
+});
+
+test("OpenCode context hook falls back when summary mode gets no summaryDecisions", async () => {
+  const { messages, metric } = await runContextHook({ apiKey: "test-key", summaryLevels: "1" });
+  assert.deepEqual(
+    { status: metric?.status, fallbackReason: metric?.fallbackReason },
+    { status: "fallback", fallbackReason: "Compiler returned no summary decisions" },
+  );
+  assert.deepEqual(messages, HOOK_MESSAGES);
+});
+
+test("OpenCode context hook fails safe without a key", async () => {
+  const { messages, metric } = await runContextHook({});
+  assert.deepEqual(
+    { status: metric?.status, fallbackReason: metric?.fallbackReason },
+    { status: "fallback", fallbackReason: "OPENROUTER_API_KEY is missing" },
+  );
+  assert.deepEqual(messages, HOOK_MESSAGES);
+  assert.equal(metric?.inputTokensBefore, metric?.inputTokensAfter);
+  assert.ok(Number(metric?.inputTokensBefore) > 0);
 });
 
 function choice(level: "drop" | "short" | "long" | "full", confidence: number) {
@@ -446,3 +529,31 @@ function chunk(id: string, dependencies: string[] = []): ContextChunk {
     source: { agent: "fixture", messageIds: [id] },
   };
 }
+
+test("selector cache reuses answers only for identical request state and candidate", () => {
+  let now = 0;
+  const cache = new SelectorAnswerCache(() => now);
+  const question = (content: string) => ({ type: "choice", instructions: { candidate: { content } } });
+  const request = (current: string, questions: Record<string, unknown>) => ({
+    model: "m",
+    state: { current_request: current },
+    questions,
+  });
+  const first = request("Refactor parseInput", { summary_0: question("a"), summary_1: question("b") });
+  cache.store("summary:key", first, { summary_0: choice("drop", 0.9), summary_1: choice("full", 0.8) });
+
+  // Same turn, new tool step: old candidates shift index but are still found; a new one is asked.
+  const next = cache.lookup("summary:key", request("Refactor parseInput", {
+    summary_0: question("b"),
+    summary_1: question("a"),
+    summary_2: question("c"),
+  }));
+  assert.deepEqual(Object.keys(next.cached), ["summary_0", "summary_1"]);
+  assert.equal(next.cached.summary_0?.type === "choice" && next.cached.summary_0.choice, "full");
+  assert.deepEqual(Object.keys(next.missing), ["summary_2"]);
+
+  assert.deepEqual(Object.keys(cache.lookup("summary:key", request("New user request", { summary_0: question("a") })).cached), []);
+  assert.deepEqual(Object.keys(cache.lookup("binary:key", first).cached), []);
+  now = 31 * 60 * 1000;
+  assert.deepEqual(Object.keys(cache.lookup("summary:key", first).cached), []);
+});

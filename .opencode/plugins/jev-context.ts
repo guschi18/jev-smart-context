@@ -41,6 +41,27 @@ export function prepareContext(messages: Message[], repository: string): Prepare
     parts.forEach((part, partIndex) => {
       const type = partType(part);
       const toolCallId = toolId(part) ?? toolId(message);
+      if (type === "tool" && toolCallId && part && typeof part === "object") {
+        const tool = part as Record<string, unknown>;
+        const state = tool.state && typeof tool.state === "object"
+          ? tool.state as Record<string, unknown>
+          : {};
+        const id = `message:${turn}:part:${partIndex}`;
+        entries.push({
+          id: `${id}:call`, turn, role: "tool_call", toolCallId,
+          content: compact({ name: tool.name, input: state.input }),
+        });
+        entryToMessage.set(`${id}:call`, turn);
+        if (state.status === "completed" || state.status === "error") {
+          entries.push({
+            id: `${id}:result`, turn, role: "tool_result", toolCallId,
+            content: compact(state.content ?? state.output ?? ""),
+            error: isToolError(part),
+          });
+          entryToMessage.set(`${id}:result`, turn);
+        }
+        return;
+      }
       const role = type === "tool-call" || type === "tool-use"
         ? "tool_call"
         : type === "tool-result" || message.role === "tool"
@@ -210,6 +231,7 @@ const plugin = {
           inputTokensAfter: result.fallbackReason ? result.inputTokensBefore : inputTokensAfter,
           selectorLatencyMs: result.selectorLatencyMs,
           selectorCostUsd: result.selectorUsage?.costUsd,
+          selectorCachedQuestions: result.selectorCachedQuestions,
           summariesStored: summariesStoredCount ?? await summariesStored,
           summaryLevels: useSummaryLevels || undefined,
           fallbackReason: result.fallbackReason,
@@ -439,8 +461,9 @@ function toolSides(messages: Message[]) {
       const id = toolId(part) ?? toolId(message);
       if (!id) continue;
       const type = partType(part);
-      if (type === "tool-call" || type === "tool-use") calls.add(id);
-      if (type === "tool-result" || message.role === "tool") results.add(id);
+      if (type === "tool-call" || type === "tool-use" || type === "tool") calls.add(id);
+      if (type === "tool-result" || message.role === "tool" ||
+        (type === "tool" && ["completed", "error"].includes(String((part as { state?: { status?: string } }).state?.status)))) results.add(id);
     }
   }
   return { calls, results };
@@ -509,7 +532,10 @@ function toolId(value: unknown) {
 function isToolError(value: unknown) {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
-  return record.isError === true || record.error === true || partType(record.output) === "error";
+  const state = record.state as { status?: string; metadata?: { exit?: number; error?: boolean } } | undefined;
+  return record.isError === true || record.error === true || partType(record.output) === "error" ||
+    state?.status === "error" || state?.metadata?.error === true ||
+    (typeof state?.metadata?.exit === "number" && state.metadata.exit !== 0);
 }
 
 function isLoopback(value: string) {

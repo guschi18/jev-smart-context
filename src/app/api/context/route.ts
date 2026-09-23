@@ -12,9 +12,12 @@ import {
 } from "@/lib/context";
 import { forwardJev } from "@/lib/jev-server";
 import { PROVIDER } from "@/lib/providers";
+import { SelectorAnswerCache } from "@/lib/selector-cache";
 import type { JevResponse } from "@/lib/types";
 
 const MAX_BODY_BYTES = 256_000;
+// Process-local: the compiler runs as a single local `next start` instance.
+const selectorCache = new SelectorAnswerCache();
 const MAX_CHUNKS = 200;
 const MAX_CHUNK_CHARS = 20_000;
 
@@ -94,32 +97,45 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const upstream = await forwardJev(apiKey, request);
-  if (
-    !upstream.ok ||
-    typeof upstream.body === "string" ||
-    !("answers" in upstream.body)
-  ) {
-    return NextResponse.json(
-      fallbackCompilation(input.chunks, `Selector failed (HTTP ${upstream.status}).`, upstream.latencyMs),
-    );
+  const scope = `${summarize ? "summary" : "binary"}:${apiKey}`;
+  const { cached, missing } = selectorCache.lookup(scope, request);
+  const missingRequest = { ...request, questions: missing as typeof request.questions };
+  let answers = cached;
+  let latencyMs = 0;
+  let usage: { inputTokens: number; outputTokens: number; costUsd?: number } | undefined;
+
+  if (Object.keys(missing).length > 0) {
+    const upstream = await forwardJev(apiKey, missingRequest);
+    latencyMs = upstream.latencyMs;
+    if (
+      !upstream.ok ||
+      typeof upstream.body === "string" ||
+      !("answers" in upstream.body)
+    ) {
+      return NextResponse.json(
+        fallbackCompilation(input.chunks, `Selector failed (HTTP ${upstream.status}).`, upstream.latencyMs),
+      );
+    }
+    const response = upstream.body as JevResponse;
+    answers = { ...cached, ...response.answers };
+    usage = {
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      costUsd: response.usage.cost,
+    };
   }
 
   try {
-    const response = upstream.body as JevResponse;
-    return NextResponse.json(
-      (summarize ? compileSummarySelection : compileSelection)(input, response.answers, upstream.latencyMs, {
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
-        costUsd: response.usage.cost,
-      }),
-    );
+    const result = (summarize ? compileSummarySelection : compileSelection)(input, answers, latencyMs, usage);
+    // Only answers that produced a valid compilation are reused.
+    selectorCache.store(scope, missingRequest, answers);
+    return NextResponse.json({ ...result, selectorCachedQuestions: Object.keys(cached).length });
   } catch (error) {
     return NextResponse.json(
       fallbackCompilation(
         input.chunks,
         error instanceof Error ? error.message : "Invalid selector response.",
-        upstream.latencyMs,
+        latencyMs,
       ),
     );
   }
