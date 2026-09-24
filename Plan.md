@@ -1,17 +1,17 @@
 # Smart Context für Coding Agents
 
-Stand: 23. September 2026
+Stand: 24. September 2026
 
-Status: Phase 5, Punkt 5: Go nach Pin-Fix und Selector-Cache (Abnahme v7/v8); `JEV_SUMMARY_LEVELS` bleibt standardmäßig aus
+Status: Phase 6 abgeschlossen; Turn-Policy mit Platzhaltern live Go (D2 Must-keep 100 %, −41 % glm / −19 % luna inkl. Jev). Routing bleibt hinter `JEV_CACHE_ROUTING=1` + `JEV_CACHE_POLICY=turn`, standardmäßig aus. Phase 5 bleibt Go; `JEV_SUMMARY_LEVELS` bleibt standardmäßig aus
 
-**Nächster Schritt: Phase 6 – Cache-aware Routing in OpenCode umsetzen.** Der detaillierte Umsetzungsplan (Schritte 1–5, Abnahmekriterien, Testmodell `opencode-go/glm-5.3-flash`) steht unter „Phase 6“ in [`docs/plan/agents/opencode.md`](docs/plan/agents/opencode.md). Beginnen mit Schritt 1 (lokal, kostenlos); Live-Läufe in Schritt 5 erst nach ausdrücklicher Freigabe.
+**Nächster Schritt: Phase 7A – Claude Code** ([`docs/plan/agents/claude-code.md`](docs/plan/agents/claude-code.md)). Phase 6 ist abgeschlossen (24. September 2026): Die Turn-Policy mit Platzhaltern hat den D2-Retest mit Must-keep in allen 8 Armen bestanden, ohne erfundene Tool-Arbeit, und spart −41 % bei glm und −19 % bei luna (inkl. Jev). A–C werden auf Entscheidung des Nutzers nicht erneut gemessen. Bekannte Einschränkung: Hook p95 0,9–1,6 s (Ziel < 700 ms, OpenRouter-Latenz). Keine OpenCode-Kompaktierungsgrenze setzen. Live-Läufe sind kostenpflichtig und starten erst nach ausdrücklicher Freigabe. Details unter „Phase 6“ in [`docs/plan/agents/opencode.md`](docs/plan/agents/opencode.md), Wiedereinstieg in [`docs/plan/restart.md`](docs/plan/restart.md).
 
 Dieser Plan ist aufgeteilt, damit ein neuer Chat nur die relevanten Teile lesen muss. Der vollständige frühere Text steht wortgetreu in den Dateien unter [`docs/plan/`](docs/plan/). Die Abschnittsnummern (§) im Text beziehen sich auf den ursprünglichen Gesamtplan. Die Tabelle unten zeigt, in welcher Datei jeder Abschnitt jetzt steht.
 
 ## Leseregel für einen neuen Chat
 
 1. **Immer:** diese Datei, [`01-ziel-und-projekt.md`](docs/plan/01-ziel-und-projekt.md), [`03-architektur.md`](docs/plan/03-architektur.md), [`04-sicherheit-und-risiken.md`](docs/plan/04-sicherheit-und-risiken.md)
-2. **Arbeit an OpenCode (aktuell Phase 6):** zusätzlich [`agents/opencode.md`](docs/plan/agents/opencode.md), vor Messungen [`05-evaluation-und-abnahme.md`](docs/plan/05-evaluation-und-abnahme.md)
+2. **Arbeit an OpenCode (Phasen 3–6):** zusätzlich [`agents/opencode.md`](docs/plan/agents/opencode.md), vor Messungen [`05-evaluation-und-abnahme.md`](docs/plan/05-evaluation-und-abnahme.md)
 3. **Arbeit an Claude Code:** zusätzlich [`agents/claude-code.md`](docs/plan/agents/claude-code.md) und [`05-evaluation-und-abnahme.md`](docs/plan/05-evaluation-und-abnahme.md)
 4. **Arbeit an Codex:** zusätzlich [`agents/codex.md`](docs/plan/agents/codex.md) und [`05-evaluation-und-abnahme.md`](docs/plan/05-evaluation-und-abnahme.md)
 5. **Nur bei Bedarf:** [`02-jev-modell.md`](docs/plan/02-jev-modell.md) für Fragen zu Jev-Primitiven und Schwellenwerten, [`06-roadmap.md`](docs/plan/06-roadmap.md) für Reihenfolge und Status, `history/*` für Messwerte, Begründungen und frühere Fehlerursachen
@@ -41,6 +41,7 @@ Dieser Plan ist aufgeteilt, damit ein neuer Chat nur die relevanten Teile lesen 
 | [`agents/cross-agent.md`](docs/plan/agents/cross-agent.md) | Konsolidierung der Agenten | §12 Phase 7C |
 | [`history/phase-0-2-context-lab-replay.md`](docs/plan/history/phase-0-2-context-lab-replay.md) | Phase 0–2 mit Replay-Ergebnissen | §12 Phase 0/1/2 |
 | [`history/phase-5-summary-stufen.md`](docs/plan/history/phase-5-summary-stufen.md) | Phase 5 vollständig, Abnahmen v1–v8, Ursachen, Fixes, Kosten | §12 Phase 5, §15 (Replay-Ausgangspunkt, reale Abnahme), §16 |
+| [`history/phase-6-live-ab.md`](docs/plan/history/phase-6-live-ab.md) | Phase 6 Schritt 5: Live-A/B v1/F/v3, Turn-Policy (turn2, turn3, D2, Platzhalter-Retest D3), alle Messwerte, Befunde, Kosten | §12 Phase 6 |
 
 ## Pflege
 

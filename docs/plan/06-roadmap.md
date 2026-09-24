@@ -16,8 +16,8 @@ Statusübersicht (Details in den verlinkten Dateien):
 | 3 | OpenCode-Plugin | ✅ | [agents/opencode.md](agents/opencode.md) |
 | 4 | OpenCode-Praxistest | ✅ Go | [agents/opencode.md](agents/opencode.md) |
 | 5 | Summary-Stufen | ✅ Go (v7/v8), Flag bleibt aus | [history/phase-5-summary-stufen.md](history/phase-5-summary-stufen.md) |
-| 6 | Cache-aware Routing (OpenCode) | ▶ aktiv | [agents/opencode.md](agents/opencode.md) |
-| 7A | Claude Code | offen | [agents/claude-code.md](agents/claude-code.md) |
+| 6 | Cache-aware Routing (OpenCode) | ✅ Go – Turn-Policy mit Platzhaltern (D2 Must-keep 100 %, −41 % glm / −19 % luna); Hook p95 0,9–1,6 s als bekannte Einschränkung; Flag bleibt aus | [agents/opencode.md](agents/opencode.md) |
+| 7A | Claude Code | ▶ nächster Schritt | [agents/claude-code.md](agents/claude-code.md) |
 | 7B | Codex | offen | [agents/codex.md](agents/codex.md) |
 | 7C | Agentübergreifende Konsolidierung | offen | [agents/cross-agent.md](agents/cross-agent.md) |
 

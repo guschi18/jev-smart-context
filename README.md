@@ -90,6 +90,22 @@ npm run dev
 
 The plugin converts the outgoing message history into compiler chunks, calls the local `/api/context` endpoint, and replaces only the model-bound messages. Tool calls and their results stay inseparable; provider-visible history is never broken. Content-free run metrics and deterministic summary variants are stored in OpenCode's plugin storage. Set `JEV_CONTEXT_ENDPOINT` if the local app runs on another URL.
 
+### Cache-aware turn policy (opt-in)
+
+By default the plugin recompiles on every dispatch, which changes the prompt prefix and costs provider cache hits. The turn policy keeps the prefix byte-stable instead:
+
+```powershell
+npm run pricing:cache            # writes .opencode/jev-pricing.json from OpenCode's local models.dev catalog
+$env:JEV_CACHE_ROUTING = "1"
+$env:JEV_CACHE_POLICY = "turn"
+$env:JEV_COMPILE_TIMEOUT_MS = "1500"   # optional: cap the wait for Jev (500-5000 ms, default 5000)
+```
+
+- Inside a tool loop, new messages are only appended; the warm prefix is reused without a compiler or Jev call.
+- At the next user turn, Jev judges the previous turn's tool outputs once. Dropped outputs are replaced by a fixed placeholder (`[Tool output removed by Jev context pruning …]`); the tool call stays visible, so the model knows what it read and re-runs the tool when it needs the content again. Answers, reasoning and user messages are never pruned.
+- Judged content is frozen afterwards; a break can only occur behind the frozen prefix. On context pressure (80 % of the model's real window) or strong growth, frozen content is re-judged when it pays off.
+- Any compiler failure or timeout sends the frozen state unchanged; removed context is never re-added.
+
 Binary keep/drop is the live policy. Summary levels (`drop / short / long / full`) are calibrated in replay (extractive head/tail variants, confidence rule: raw `short` below 0.50 is raised to `long`) but are not sent yet — they become active only after controlled real-session validation.
 
 ## Results so far
@@ -97,6 +113,7 @@ Binary keep/drop is the live policy. Summary levels (`drop / short / long / full
 - **Replay evaluation** (100 runs, calibration + holdout): 83.6 % median token reduction, 100 % must-keep recall, 95.2 % precision, p95 latency 374–479 ms, positive net savings.
 - **OpenCode field test** (three independent long sessions, 99 model messages): all 48 canary and repository-rule checks passed, 42.7 % dispatch input reduction, p95 625 ms, zero context losses across network, timeout and parser fallbacks.
 - **Summary-level replay** (45 runs after calibration): 100 % minimum-detail recall, 93.7 % median reduction, p95 417 ms.
+- **Cache-aware turn policy** (live A/B against native OpenCode, large-context session with fixed tool work, 2 models × 2 runs): all must-keep checks passed in every arm, every turn made exactly the required tool calls, net cost incl. Jev −41 % (`glm-5.3-flash`) and −19 % (`gpt-5.6-luna`), largest prompt 193–206k → 122–139k tokens. Known limitation: hook p95 0.9–1.6 s, caused by selector latency at OpenRouter.
 
 Full numbers, thresholds, phase decisions and acceptance criteria: [Plan.md](Plan.md).
 
@@ -116,6 +133,7 @@ src/
     context.ts             compiler core (chunks, pins, selectors, fallback)
     context-fixture.ts     10 replay scenarios with must-keep / safe-to-drop labels
     context-evaluation.ts  replay metrics, threshold calibration, Go/No-Go report
+    cache-routing.ts       pricing, cache warmth, reuse/rebuild and turn-policy decisions
     examples.ts            playground examples
   app/
     page.tsx               Jev playground
@@ -127,6 +145,8 @@ src/
 scripts/
   evaluate-context.ts      replay evaluation runner
   evaluate-summaries.ts    summary-level evaluation runner
+  cache-pricing.ts         model cache prices from OpenCode's local catalog
+  calibrate-cache-routing.ts  offline cache calibration (numeric fields only)
 ```
 
 ## Origin & credits

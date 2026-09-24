@@ -91,6 +91,8 @@ export type CompilationResult = {
   selectorUsage?: { inputTokens: number; outputTokens: number; costUsd?: number };
   summaryDecisions?: SummaryDecision[];
   selectorCachedQuestions?: number;
+  /** Jev noul: does the current request continue the previous one? */
+  continuity?: number;
   fallbackReason?: string;
 };
 
@@ -111,6 +113,8 @@ export type CompileInput = {
   repository: string;
   chunks: ContextChunk[];
   summaryLevels?: boolean;
+  /** Cache routing gray zone: ask whether the previous task continues. */
+  continuity?: { previousRequest: string };
 };
 
 const secretPatterns = [
@@ -118,6 +122,8 @@ const secretPatterns = [
   /\b(?:api[_-]?key|token|password|secret)\s*[:=]\s*["']?[^\s"']{8,}/i,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/i,
   /\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{12,}/i,
+  // Hyphenated provider keys: sk-or-v1-… (OpenRouter), sk-proj-…, sk-ant-…
+  /\bsk-[A-Za-z0-9_-]{16,}/i,
 ];
 
 export function containsSecret(value: string) {
@@ -361,7 +367,7 @@ export function buildSelectorRequest(input: CompileInput, model: string) {
         active_goal: redactSecrets(input.activeGoal),
         repository: redactSecrets(input.repository),
       } satisfies JsonValue,
-      questions,
+      questions: withContinuityQuestion(questions, input),
     },
   };
 }
@@ -404,9 +410,35 @@ export function buildSummarySelectorRequest(input: CompileInput, model: string) 
         active_goal: redactSecrets(input.activeGoal),
         repository: redactSecrets(input.repository),
       } satisfies JsonValue,
-      questions,
+      questions: withContinuityQuestion(questions, input),
     },
   };
+}
+
+// Jev judges only whether the task continues; cost and safety stay in code.
+function withContinuityQuestion<T extends Record<string, unknown>>(questions: T, input: CompileInput) {
+  if (!input.continuity) return questions;
+  return {
+    ...questions,
+    continuity: {
+      type: "noul" as const,
+      instructions: {
+        question: "Does the current request continue the same task as the previous request?",
+        previous_request: redactSecrets(input.continuity.previousRequest),
+      },
+      criteria: {
+        true: "It continues the same task; the earlier context stays authoritative.",
+        false: "It starts a new topic or goal.",
+      },
+    },
+  };
+}
+
+export function readContinuity(answers: Record<string, Answer>) {
+  const answer = answers.continuity;
+  return answer?.type === "noul" && Number.isFinite(answer.noul) && answer.noul >= 0 && answer.noul <= 1
+    ? answer.noul
+    : undefined;
 }
 
 export function readSummaryDecisions(

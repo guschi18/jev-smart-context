@@ -7,6 +7,7 @@ import {
   containsSecret,
   estimateTokens,
   fallbackCompilation,
+  readContinuity,
   type CompileInput,
   type ContextChunk,
 } from "@/lib/context";
@@ -46,7 +47,13 @@ function parseInput(value: unknown): CompileInput | null {
     !Array.isArray(input.chunks) ||
     input.chunks.length > MAX_CHUNKS ||
     !input.chunks.every(isChunk) ||
-    (input.summaryLevels !== undefined && typeof input.summaryLevels !== "boolean")
+    (input.summaryLevels !== undefined && typeof input.summaryLevels !== "boolean") ||
+    (input.continuity !== undefined && (
+      !input.continuity ||
+      typeof input.continuity !== "object" ||
+      typeof input.continuity.previousRequest !== "string" ||
+      input.continuity.previousRequest.length > MAX_CHUNK_CHARS
+    ))
   ) {
     return null;
   }
@@ -55,6 +62,7 @@ function parseInput(value: unknown): CompileInput | null {
     activeGoal: input.activeGoal,
     repository: input.repository,
     ...(input.summaryLevels ? { summaryLevels: true } : {}),
+    ...(input.continuity ? { continuity: { previousRequest: input.continuity.previousRequest } } : {}),
     chunks: input.chunks.map((chunk) => ({
       ...chunk,
       tokenEstimate: estimateTokens(chunk.content),
@@ -91,7 +99,8 @@ export async function POST(req: NextRequest) {
   const { candidates, request } = summarize
     ? buildSummarySelectorRequest(input, PROVIDER.model)
     : buildSelectorRequest(input, PROVIDER.model);
-  if (candidates.length === 0) {
+  // The continuity question is asked even when no chunk is a candidate.
+  if (candidates.length === 0 && !input.continuity) {
     return NextResponse.json(
       summarize ? compileSummarySelection(input, {}, 0) : compileSelection(input, {}, 0),
     );
@@ -129,7 +138,11 @@ export async function POST(req: NextRequest) {
     const result = (summarize ? compileSummarySelection : compileSelection)(input, answers, latencyMs, usage);
     // Only answers that produced a valid compilation are reused.
     selectorCache.store(scope, missingRequest, answers);
-    return NextResponse.json({ ...result, selectorCachedQuestions: Object.keys(cached).length });
+    return NextResponse.json({
+      ...result,
+      selectorCachedQuestions: Object.keys(cached).length,
+      ...(input.continuity ? { continuity: readContinuity(answers) } : {}),
+    });
   } catch (error) {
     return NextResponse.json(
       fallbackCompilation(

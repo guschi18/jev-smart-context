@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# generated local model prices (npm run pricing:cache)
+.opencode/jev-pricing.json

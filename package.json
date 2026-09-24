@@ -9,7 +9,9 @@
     "lint": "eslint",
     "test:context": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test src/lib/context.test.ts",
     "evaluate:context": "node --env-file=.env --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/evaluate-context.ts",
-    "evaluate:summaries": "node --env-file=.env --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/evaluate-summaries.ts"
+    "evaluate:summaries": "node --env-file=.env --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/evaluate-summaries.ts",
+    "pricing:cache": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning --experimental-strip-types scripts/cache-pricing.ts",
+    "calibrate:cache": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning --experimental-strip-types scripts/calibrate-cache-routing.ts"
   },
   "dependencies": {
     "next": "16.3.5",

@@ -1,6 +1,6 @@
 # Agent: OpenCode
 
-OpenCode-V2-Adapter, abgeschlossene Phasen 3–4, implementierte Summary-Baseline und die aktive Phase 6. Lesen für jede OpenCode-Arbeit.
+OpenCode-V2-Adapter, abgeschlossene Phasen 3–6 und die implementierte Summary-Baseline. Lesen für jede OpenCode-Arbeit.
 
 > Teil des aufgeteilten Plans. Index, Status und Leseregeln: [`Plan.md`](../../../Plan.md). Abschnittsnummern (§) entsprechen dem ursprünglichen Gesamtplan.
 
@@ -102,15 +102,124 @@ Choice bleibt das Primitive für `drop/short/long/full`. Score wird nicht zusät
 
 ### Phase 6: Cache-aware Routing
 
-Status: geplant am 23. September 2026, Umsetzung offen. Checkliste:
+Status: **abgeschlossen** (24. September 2026). Schritte 1–5 am 23. September 2026 durchgeführt. Entscheidung: **No-Go** (v3: Pressure-Kriterium; Turn-Policy-Retest: Must-keep, siehe „Folgearbeit“); am 24. September 2026 **Go für die Turn-Policy mit Platzhaltern** (Must-keep 100 %, D2 −41 % glm / −19 % luna). Flag bleibt aus. Checkliste:
 
-- [ ] 1. Provider- und Agent-Metriken normalisieren.
-- [ ] 2. Reuse/Rebuild-Break-even deterministisch berechnen.
-- [ ] 3. Task-Kontinuität optional mit Jev bewerten.
-- [ ] 4. Policy anhand realer Sessions kalibrieren.
-- [ ] 5. Reuse und Rebuild vollständig in OpenCode gegeneinander testen.
+- [x] 1. Provider- und Agent-Metriken normalisieren.
+- [x] 2. Reuse/Rebuild-Break-even deterministisch berechnen.
+- [x] 3. Task-Kontinuität optional mit Jev bewerten.
+- [x] 4. Policy anhand realer Sessions kalibrieren.
+- [x] 5. Reuse und Rebuild vollständig in OpenCode gegeneinander testen.
 
 Ergebnis: in OpenCode validierte, kostenbewusste Entscheidung zwischen warmem Präfix und kleinerem neuen Context.
+
+#### Ergebnisse Schritte 1–4 (lokal)
+
+**Schritt 1:** `src/lib/cache-routing.ts` enthält `ModelPricing`/`readPricing` (fehlender `cacheWritePerM` → Inputpreis), `normalizeUsage` (V2-Form `tokens.cache.read/write`) und `cacheWarmth`. `npm run pricing:cache` schreibt `.opencode/jev-pricing.json` (gitignored, 5.139 Modelle mit Cache-Read-Preis; `opencode-go/glm-5.3-flash`: Input `0,15`, Cache-Read `0,03` USD/1M, Context `1M`, kein eigener Write-Preis).
+
+**1c – Diagnose am echten Hook** (`JEV_HOOK_DIAGNOSTIC=1`, schreibt nur Feldnamen/Typen; drei kurze glm-5.3-flash-Läufe, zusammen ≈ `0,004 USD`):
+- `event` trägt `sessionID`, `agent`, `model {providerID, id, variant}`, `options`, `tools`, `system`, `messages`.
+- Jede Message hat eine stabile `id` (String); jeder Assistant-Schritt ist eine eigene Message (Tool-Schritt und Antwort getrennt). Routing-Key = `id`, Fallback SHA-256 der kanonischen Message-JSON.
+- Messages tragen **keine** `tokens`. Provider-Usage gibt es nur offline aus `session_message` (Schritt 4 und Abnahme); das Routing arbeitet mit Preisen, Leerlauf und Tokenschätzung.
+- Folge: Routing-State wird pro `sessionID` **und** `agent` geführt, damit Nebenagenten (z. B. Titelgenerierung) das Präfix der Haupt-Session nicht entwerten.
+
+**Schritt 2:** `decideRoute` setzt die Regeln 1–6 in fester Reihenfolge um. Das Plugin führt mit `JEV_CACHE_ROUTING=1` einen inhaltsfreien Routing-State (In-Memory plus `routing/<session>/<agent>` im Plugin-Storage; nur Keys, Hashes, Tokenzahlen, Zeitstempel, EMAs). `buildReuseMessages` rekonstruiert das zuletzt gesendete Präfix (Summary-Extrakte byte-identisch über `createSummaryVariants`) und hängt alles nach der zuletzt gesehenen Message an. Geänderter Hash, fehlende Message, Modellwechsel oder `validateToolPairs`-Fehler → Präfix ungültig → Rebuild. Reuse überspringt Compiler und Jev vollständig (`status: "reused"`, `compilerSkipped: true`). Jede Metrik enthält `routeInput` und `routeConfig`, damit Live-Entscheidungen offline mit `decideRoute` reproduzierbar sind. Storage-Fehler: In-Memory-State arbeitet weiter; unlesbarer State → erster Dispatch (Status quo).
+
+**Schritt 3:** Nur in der Grauzone eines neuen User-Turns sendet das Plugin `continuity: { previousRequest }`. Beide Request-Builder hängen dann die Noul-Frage `continuity` an (`previous_request` redigiert); `route.ts` validiert das Feld (String, ≤ 20.000 Zeichen), stellt die Frage auch ohne Kandidaten und liefert `continuity` zurück. Ohne Feld bleiben Request und Response unverändert. Das Plugin wertet die Antwort in der Neubewertung nach dem Rebuild aus (Regel 6): `≥ 0,60` reuse, `≤ 0,40` rebuild, dazwischen rebuild.
+
+**Schritt 4 – Offline-Kalibrierung** (`npm run calibrate:cache`, read-only, nur numerische Felder; 90 Sessions, 2.868 Assistant-Schritte, 232 Plugin-Metriken):
+
+| Leerlauf vor Schritt | Schritte | Hit nativ | Hit mit Plugin |
+| --- | --- | --- | --- |
+| < 60 s | 2.541 | 0,894 | 0,799 |
+| 60–300 s | 121 | 0,835 | 0,488 |
+| 300–600 s | 21 | 0,724 | 0,399 |
+| 600–1800 s | 8 | 0,126 | 0 |
+| > 1800 s | 7 | 0 | 0,081 |
+
+- Präfixbruch-Preis: Hit-Anteil nach einem Dispatch, dessen Context das Plugin verkleinert hat, `0,57` (128 Fälle); bei unverändertem Context `0,73` (104 Fälle).
+- Dispatches pro User-Turn: Median `3`, p75 `8`, Mittel `6,7` (431 Turns).
+- Replay von `decideRoute` über die aufgezeichneten Dispatch-Sequenzen, bepreist mit den gemessenen Hit-Raten: Rebuild-always `0,2714 USD` → Routed `0,1461 USD` (−46 %), 220/232 Dispatches reuse, keine Pressure-Verletzung. Das Optimum ist flach: `margin`, `pressureRatio` und `horizon` ändern das Ergebnis nicht messbar, weil fast alle Dispatches Tool-Loop-Schritte sind (Regel 3). Nur `uncertainMs = 900 s` wäre um 2,6 % günstiger, stützt sich aber auf 8 Schritte und widerspricht der Hit-Kurve.
+- Übernommen in `DEFAULT_ROUTING`: `pHit` warm/uncertain/cold = `0,89 / 0,72 / 0,07` (gemessen nativ), TTL-Grenzen `300 s / 600 s` (unverändert, durch die Kurve bestätigt), `horizon = 2` (Median 3 minus aktueller Dispatch), `margin = 0,1` und `pressureRatio = 0,8` (flach, konservative Startwerte bleiben).
+- Grenzen: Die Kalibrierbasis besteht überwiegend aus Test-Sessions dieses Projekts; die Simulation bewertet nur Kosten, nicht Qualität. Qualität und reale Kosten klärt erst Schritt 5.
+
+Lokaler Stand: `37/37` Context-Tests, `tsc --noEmit`, ESLint und Next.js-Produktions-Build bestanden. `/api/context`-Smoke: ohne `continuity` unverändert; mit `continuity` und echtem Key „gleicher Auftrag“ `0,69`, „neues Thema“ `0,02` (je ≈ `0,000016 USD`); ungültiges/zu langes Feld → `422`.
+
+#### Ergebnisse Schritt 5 (Live-A/B, `opencode-go/glm-5.3-flash`)
+
+Alle Messwerte (Tokens, Cache, Latenz, Routen je Arm, v1/F/v3, Befunde): [`history/phase-6-live-ab.md`](../history/phase-6-live-ab.md).
+
+Aufbau: isolierte Kopien unter `%TEMP%\jev-cache-v1` / `-v3` ohne `.env`/`Plan.md`, `node_modules` als Junction, eigener Git-Baseline-Commit je Kopie. Arme: **nativ** (Plugin ohne Key → nie mutiert), **rebuild-always** (Compiler Port 3417), **routed** (`JEV_CACHE_ROUTING=1`, eigener Compiler Port 3418, damit kein gemeinsamer `SelectorAnswerCache`). Harness erkennt Turn-Ende über `idle` in `session_message`, prüft das Workspace-Verzeichnis und protokolliert nach `runs.jsonl`. Canaries A `ALPHA-7431`, B `BRAVO-2290`, C `CHARLIE-5518`, D `DELTA-9044`, F `ECHO-3107`.
+
+**Fehlerfälle F (v1, routed, 0,030 USD):** alle bestanden, Canary 4/4, Replay 44/44. Ungültiges Präfix → nur `invalid prefix`-Rebuilds; fehlende Preisdatei → nur `no pricing`; Storage-Fehler → `first dispatch` je Prozess, danach In-Memory-Reuse; Compiler-Fehler → vollständiger Fallback, danach Reuse des vollen Contexts. Kein Absturz, keine ungültige Sequenz.
+
+**v1 (abgebrochen) → Modellkorrektur:** Routed wählte fast immer `reuse cheaper` und lag in A über Rebuild (`0,0404` vs. `0,0337 USD`). Ursachen: `keepRatio` wurde vom trivialen ersten Compile (≈ 1) gesetzt, und die Rebuild-Seite rechnete mit 0 % Cache-Treffern. Korrektur: `pHitRebuild = 0,52` (gemessener Hit nach Kontextmutation), `keepRatioPrior = 0,64` (Median der Compiles mit Jev-Entscheidungen), `keepRatio` lernt nur noch aus Compiles mit Jev-Entscheidungen; Regressionstest ergänzt (`37/37`).
+
+**v3 (vollständig, 0,689 USD):** Gesamtkosten = Agent (reale Provider-Kosten aus `session_message`) + Selector.
+
+| Session | nativ | rebuild-always | routed |
+| --- | --- | --- | --- |
+| A Codebase/Refactor (18 Turns) | 0,0519 | 0,0527 | 0,0543 |
+| B Security/Konfiguration (18) | 0,0631 | 0,0524 | 0,0603 |
+| C Test/Root Cause (17) | 0,0334 | 0,0456 | 0,0335 |
+| D Cache-Grenzfälle (15, Pausen 11/6 min) | 0,0832 | 0,1056 | 0,0935 |
+| **Σ USD** | **0,2316** | **0,2562** | **0,2416** |
+
+- Routed −5,7 % gegenüber Rebuild-always, aber +4,3 % gegenüber nativ. Routed wählte in 131/140 Dispatches Reuse (Tool-Loop 71, `reuse cheaper` 60; Compiler übersprungen in 127/140) und verhielt sich damit weitgehend wie nativ; der Vorteil gegenüber Rebuild stammt aus C und D. In A und B war Rebuild günstiger als routed.
+- Rebuild erreichte median 32–50 % Reduktion, aber die Selector-Kosten (`0,006–0,015 USD` je Session) und der niedrigere Cache-Read-Anteil (`0,37–0,73`) zehren den Vorteil bei diesem günstigen Modell auf. Nativ ist insgesamt am günstigsten.
+- Modellnachrichten je Arm 29–42 (A–C ≥ 32, D 29–41).
+- Must-keep: 12/12 Arme korrekt (Canary, `src/`-Regel inkl. abgelehnter README-Änderung, zwei abgelehnte `.env`-Anfragen, Root Cause `cacheWarmth` `<`→`<=` mit 36/1 → 37/0, offene Aufgabe erst auf Signal, Sprachregel). Geänderte Dateien je Session in allen Armen identisch.
+- Keine Tool-Paar- oder Sequenzfehler in den Plugin-Armen; ein einzelner Provider-Fehler im nativen Arm C (unabhängig vom Plugin).
+- Hook p95 routed `12–18 ms` (A–C) und `410 ms` (D); rebuild `620–701 ms`.
+- Replay 140/140 Live-Entscheidungen reproduziert. Pausen korrekt erkannt (`cold cache` nach 11 min, `gray zone` mit Kontinuitätsfrage).
+
+**Abnahmekriterien**
+
+| Kriterium | Ergebnis |
+| --- | --- |
+| 100 % Must-keep im Routed-Arm | ✅ |
+| Task-Erfolg/Patch-Qualität ≥ Rebuild | ✅ identische Änderungen |
+| Keine verwaisten Tool-Paare; Fehler → voller Context | ✅ (F 4/4) |
+| Gesamtkosten routed < rebuild-always | ✅ `0,2416` < `0,2562` USD; über nativ (`0,2316`) |
+| Hook p95 < 700 ms | ✅ max. `410 ms` |
+| Keine Outgoing-Größe über der Pressure-Schwelle | ❌ D-routed Provider-Prompt `88.360` > `86.400` (0,8 × 108k); Rebuild max. `61.209` |
+| Replay 100 % | ✅ 140/140 |
+
+**Befund Pressure-Schutz:** Regel 2 arbeitet mit der Plugin-Tokenschätzung der Messages. Diese lag in D-routed bei `31.699`, der Provider meldete `88.360` (Faktor ≈ 2,8; System-Prompt und Tool-Definitionen fehlen, JSON wie `package-lock.json` tokenisiert deutlich dichter als die Schätzung). Die Regel konnte deshalb nicht auslösen. Eine OpenCode-Compaction trat nicht auf, der Abstand zur Schwelle war aber nur noch 18 %.
+
+**Entscheidung: No-Go** für v3. Flag bleibt standardmäßig aus. Nötige Korrektur vor einem erneuten Lauf: Pressure-Prüfung mit kalibriertem Verhältnis Provider-Prompt / Schätzung plus festem Overhead für System-Prompt und Tools (offline aus `session_message` bestimmbar). Zusätzlich zeigt die Kampagne, dass Rebuild bei `glm-5.3-flash` gegenüber nativ nicht lohnt; der Kostenvorteil von Routing entsteht vor allem, indem es Jev-Aufrufe vermeidet.
+
+Kosten Schritt 5 gesamt ≈ `1,04 USD` (v1 inkl. F und 1c `0,345`, abgebrochener v2-Start wenige Cent, v3 `0,689`).
+
+#### Folgearbeit: echte Werte und Turn-Policy
+
+Details und Tabellen: [`history/phase-6-live-ab.md`](../history/phase-6-live-ab.md) (Folgeanalyse, Turn-Policy).
+
+- Echte Provider-Tokens sind im Hook verfügbar: `ctx.session.context({ sessionID })` liefert in 1–2 ms alle Nachrichten seit der letzten Compaction mit `tokens` und `cost` (live bestätigt).
+- Neubepreisung von v3 mit Top-Tier-Modellen: nativ bleibt am günstigsten; der Hebel ist der Cache-Bruch, nicht die Selector-Kosten (< 1,5 % bei Top-Tier).
+- Turn-Policy (`JEV_CACHE_POLICY=turn`, standardmäßig aus): Tool-Schleife nur anhängen, Jev kürzt den vorherigen Turn bei der nächsten User-Eingabe, Bewertetes bleibt eingefroren. Live A–C: glm −11 %, `gpt-5.6-luna` −6,5 % gegenüber nativ bei 100 % Must-keep und stabilem Cache-Read (luna 0,92–0,96). Session D bei beiden Modellen teurer (Voll-Neubewertung nach Pause bricht warmen Cache; Pressure-Neubewertung scheitert an der 256-kB-Payload-Grenze; Kompaktierungsgrenze modellabhängig).
+- Stand lokal: `43/43` Context-Tests, `tsc`, ESLint; Fallback der Turn-Policy sendet nie wieder gekürzten Kontext.
+- Umgesetzt für große Kontexte bis 1M Tokens (lokal, `47/47` Tests, `tsc`, ESLint, Build):
+  1. An Jev gehen nur noch offene Chunks (vorheriger Turn inkl. Tool-Schleife); eingefrorene Inhalte werden nie wieder übertragen. Jev bewertet jeden Chunk einzeln gegen die aktuelle Anfrage, dadurch geht nichts verloren.
+  2. Jede Kompilierung läuft in Batches (≤ 60 Chunks, ≤ 200 kB), Abhängigkeiten werden danach über alle Batches geschlossen.
+  3. Pressure = `0,8 ×` echtes Kontextfenster des Modells mit echten Provider-Tokens; keine feste 108k-Grenze, keine Neubewertung allein wegen einer Pause.
+  4. `refresh`: Ab `40k` echten Prompt-Tokens und `1,5 ×` Wachstum seit der letzten Gesamtbewertung bewertet Jev auch eingefrorene Chunks neu (entfernte bleiben entfernt). Angewendet wird nur, wenn `entfernt × Cache-Read × 10 Dispatches ≥ Tail × (Write − Read)` gilt; unter Pressure immer.
+- Zusätzlich `JEV_COMPILE_TIMEOUT_MS` (500–5000 ms, Standard 5000): Obergrenze je Compiler-Anfrage; bei Timeout geht der eingefrorene Stand raus (`48/48` Tests).
+
+**Retest (23. September 2026, ≈ 1,74 USD):** Details in [`history/phase-6-live-ab.md`](../history/phase-6-live-ab.md) („Retest `jev-turn3-*` und `jev-d2-*`“).
+- A–C: glm −18 %, luna −2 % gegenüber nativ (inkl. Jev).
+- D mit frei gewählter Lesestrategie nicht vergleichbar (Arme arbeiteten verschieden). D2 mit vorgeschriebenen Tool-Aufrufen, 2 Modelle × 2 Wiederholungen: turn −11 bis −32 %, turnfast (1,5-s-Timeout) −9 bis −43 %; Jev ≈ 0,005 USD je Session. Technisch sauber: keine Payload-Fehler, Refresh greift, Replay 100 %, echte Tokens 96–97 %.
+- Hook p95 3–5 s im turn-Arm, verursacht durch OpenRouter-Latenz (p95 2,3 s, max. 4,7 s, unabhängig von der Payload); turnfast begrenzt auf 1,5 s.
+- **Must-keep verletzt:** luna verlor in 4 von 5 Plugin-Armen Fakten aus früheren Turns; glm erfand in einem turn-Arm drei Leseergebnisse ohne Tool-Aufruf. Ursachen: Relevanz wird nur gegen die aktuelle Anfrage bewertet, und vollständig gelöschte Tool-Paare neben stehengebliebenen Antworten („Beide Aufrufe sind abgeschlossen …“) bringen das Modell dazu, Tool-Arbeit zu behaupten.
+- **Entscheidung: No-Go.** Flag bleibt aus.
+- Umgesetzt nach dem Retest (lokal, `50/50` Tests, `tsc`, ESLint, Build; noch nicht live): Die Turn-Policy entfernt keine Nachrichten mehr, sondern ersetzt gekürzte V2-Tool-Ausgaben durch den festen Text `TOOL_OUTPUT_REMOVED` (Aufruf bleibt sichtbar); Antworten, Reasoning und User-Nachrichten sind keine Kandidaten mehr. Routing-State-Eintrag `{ stubOf, parts, hash }` hält das Präfix byte-stabil. Außerdem erkennt die Secret-Erkennung jetzt `sk-…`-Keys mit Bindestrich (OpenRouter).
+
+**Platzhalter-Retest (24. September 2026, ≈ 0,78 USD):** Details in [`history/phase-6-live-ab.md`](../history/phase-6-live-ab.md) („Platzhalter statt Löschen“).
+- Der Smoke-Test fand einen Fehler: Live liefert OpenCode Tool-Ergebnisse als eigene `role: "tool"`-Nachricht ohne `id` (`tool-result`-Teil mit `result: { type: "text", value }`), nicht als V2-`tool`-Teil. Die Stub-Logik griff dadurch nie. Behoben in `toolPartOf`/`stubMessage`, Test mit der Live-Form (`51/51`). Danach akzeptierte OpenCode die Stubs, und das Modell las gekürzte Dateien bei Bedarf selbst neu.
+- D2 erneut (nativ vs. turn, 2 Modelle × 2 Läufe): glm −47 % / −34 %, luna −21 % / −16 % inkl. Jev (Σ glm −41 %, Σ luna −19 %). Größter Prompt 193–206k → 122–139k.
+- **Must-keep 8/8 Arme korrekt**, jeder turn-Turn mit exakt den vorgeschriebenen Tool-Aufrufen; keine erfundenen Leseergebnisse. Kein Fallback, Replay 100 %.
+- Hook p95 turn 0,9–1,6 s (OpenRouter-Latenz), weiter über 700 ms.
+- **Entscheidung: Go für die Turn-Policy mit Platzhaltern** (D2-Kriterium); **Phase 6 abgeschlossen.** A–C werden auf Entscheidung des Nutzers nicht erneut gemessen (D2 ist der härteste Fall; A–C waren schon ohne Platzhalter Must-keep-korrekt). Bekannte Einschränkung: Hook p95 0,9–1,6 s (Ziel < 700 ms), begrenzbar mit `JEV_COMPILE_TIMEOUT_MS`. Flag bleibt standardmäßig aus.
+- Nächster Schritt: Phase 7A (Claude Code), siehe [`claude-code.md`](claude-code.md).
 
 #### Context
 
