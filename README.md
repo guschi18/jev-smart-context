@@ -98,7 +98,7 @@ npm run dev
 | Mode | Flags | When Jev is asked | Status |
 | --- | --- | --- | --- |
 | **Turn policy** (recommended) | `JEV_CACHE_ROUTING=1`, `JEV_CACHE_POLICY=turn` | Once per user turn, only for the previous turn's tool outputs; tool loops reuse the warm prefix | Live Go (Phase 6); opt-in |
-| Per call (default) | none | Before every model call, over the whole history; dropped chunks are removed | Live Go (Phase 4) |
+| Per call (default) | none | Before every model call, over the whole history; dropped chunks are removed | Live Go (Phase 4); +10.7 % cost vs native (see results) |
 | Summary levels | `JEV_SUMMARY_LEVELS=1` | Before every model call; candidates become `drop / short / long / full` extracts | Live Go (Phase 5); opt-in, disables the turn policy |
 | Cost routing | `JEV_CACHE_ROUTING=1` without `JEV_CACHE_POLICY` | Per call, but skips Jev when reusing the warm prefix is cheaper | Experimental, No-Go |
 
@@ -125,15 +125,48 @@ All flags are off by default; enabling one by default is a separate product deci
 | `JEV_PRICING_FILE` | `.opencode/jev-pricing.json` | Alternative pricing file |
 | `JEV_HOOK_DIAGNOSTIC` | off | `1` records field names and types of hook events (never contents) |
 
-## Results so far
+## Results: measured against native OpenCode
 
-- **Replay evaluation** (100 runs, calibration + holdout): 83.6 % median token reduction, 100 % must-keep recall, 95.2 % precision, p95 latency 374–479 ms, positive net savings.
-- **OpenCode field test, per call** (three independent long sessions, 99 model messages): all 48 canary and repository-rule checks passed, 42.7 % dispatch input reduction, p95 625 ms, zero context losses across network, timeout and parser fallbacks.
-- **Summary levels, live** (three sessions, 146 dispatches): 100 % must-keep facts, 64.4 % median reduction, p95 575 ms, positive net effect.
-- **Turn policy, live A/B against native OpenCode** (large-context session with topic switches, cache-expiring pauses and full reads of large files; fixed tool work; 2 models × 2 runs): all must-keep checks passed in every arm, every turn made exactly the required tool calls, net cost incl. Jev **−41 %** (`glm-5.3-flash`) and **−19 %** (`gpt-5.6-luna`), largest prompt 193–206k → 122–139k tokens, no fallback, 100 % offline replay of routing decisions.
-- **Known limitation:** with the turn policy the hook p95 is 0.9–1.6 s on turns where Jev is asked (median ~15 ms), driven by selector latency at OpenRouter. `JEV_COMPILE_TIMEOUT_MS` caps it; on timeout the frozen state is sent without pruning.
+Only live A/B runs are listed: the same prompts in isolated copies of this repository, once with native OpenCode and once with the plugin, run in parallel. Costs are the provider-billed costs OpenCode records per model step, plus the Jev selector costs. No estimates.
 
-Full numbers, thresholds, phase decisions and acceptance criteria: [Plan.md](Plan.md) and [docs/plan/](docs/plan/) (German).
+**In short:** with large contexts the turn policy is clearly cheaper. With small contexts Jev calls and cache breaks can cost more than the pruning saves.
+
+### Large context: cheaper
+
+Session with ~190–200k tokens of native prompt: topic switches, pauses long enough for the cache to expire, full reads of large files. The tool work is fixed per prompt, so both arms read exactly the same bytes. Current turn policy with placeholders.
+
+| Model | Run | Native USD | Turn policy USD (incl. Jev) | Difference | Largest prompt native → turn |
+| --- | --- | --- | --- | --- | --- |
+| `glm-5.3-flash` | 1 | 0.1436 | 0.0764 | −47 % | 205k → 133k |
+| `glm-5.3-flash` | 2 | 0.1154 | 0.0765 | −34 % | 206k → 134k |
+| `gpt-5.6-luna` | 1 | 0.0936 | 0.0736 | −21 % | 193k → 122k |
+| `gpt-5.6-luna` | 2 | 0.0936 | 0.0789 | −16 % | 193k → 139k |
+
+Pooled: **−41 %** (glm) and **−19 %** (luna). Jev cost ~0.004 USD per session. The glm cache hits vary strongly between runs, so single glm runs are noisy.
+
+### Small context: can be more expensive
+
+Three sessions (codebase refactor, security/configuration, test/root cause) with 18–33k tokens of native prompt.
+
+| Mode | Model | Sum of 3 sessions | Single sessions |
+| --- | --- | --- | --- |
+| Turn policy, run 1 | `glm-5.3-flash` | −11 % | +20 %, −31 %, −8 % |
+| Turn policy, run 2 | `glm-5.3-flash` | −18 % | −17 %, −23 %, −6 % |
+| Turn policy, run 1 | `gpt-5.6-luna` | −6.5 % | −18 %, −1 %, +3 % |
+| Turn policy, run 2 | `gpt-5.6-luna` | −2 % | +14 %, −19 %, −6 % |
+| Per call (default) | `glm-5.3-flash` | +1.5 % | +1.5 %, −17 %, +37 % |
+
+- Small contexts leave little to prune, while each pruned turn still costs a Jev call and rewrites part of the cached prompt. With `gpt-5.6-luna`, which caches reliably, the savings are close to zero.
+- The **per-call default mode** was more expensive than native in the same comparison: +10.7 % over all four sessions including a large one. It shrinks the context, but every recompilation breaks the provider's prompt cache. That finding is the reason the turn policy exists.
+- The small-context turn-policy runs used the earlier version that deleted pruned tool pairs instead of replacing their output with a placeholder. They have not been repeated with placeholders.
+
+### Quality and latency (live)
+
+- **Must-keep:** canary codes, session rules, repository facts and earlier answers were correct in all 8 large-context arms with the current turn policy. Every turn made exactly the required tool calls; no invented read results. The per-call mode passed 48/48 checks in three long sessions, and the summary levels passed all must-keep checks as well.
+- **Fail-safe:** network errors, timeouts, invalid compiler responses, missing prices and storage errors all sent a safe context. Offline replay reproduced 100 % of the routing decisions.
+- **Latency (known limitation):** with the turn policy the hook p95 is 0.9–1.6 s on turns where Jev is asked (median ~15 ms), driven by selector latency at OpenRouter. `JEV_COMPILE_TIMEOUT_MS` caps it; on timeout the frozen state is sent without pruning.
+
+Limits of these results: two inexpensive models, two runs per setup and one large-context session type. Full numbers, raw data locations and phase decisions: [docs/plan/history/phase-6-live-ab.md](docs/plan/history/phase-6-live-ab.md) and [Plan.md](Plan.md) (German).
 
 ## Safety model
 
