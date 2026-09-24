@@ -16,7 +16,7 @@ Kurzer Startpunkt für die nächste Sitzung. Messwerte und Begründungen stehen 
 - Flag bleibt standardmäßig aus (separate Produktentscheidung).
 - **Nächster Schritt: Phase 7A – Claude Code** ([`agents/claude-code.md`](agents/claude-code.md)).
 
-Offen zur Entscheidung: Löschen der alten `%TEMP%\jev-*`-Ordner.
+Offene Punkte zur Open-Source-Bereitschaft (CI-Tests, Kampagnen-Skripte, Aufräumen): [`open-source-todo.md`](open-source-todo.md).
 
 ## So startet man die Läufe
 
